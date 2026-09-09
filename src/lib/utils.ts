@@ -37,6 +37,16 @@ export function haversineMeters(a: Coordinates, b: Coordinates): number {
   return 2 * EARTH_RADIUS_M * Math.asin(Math.min(1, Math.sqrt(h)));
 }
 
+/** "18 min" / "1 hr 5 min" - the driving time beside a road distance. */
+export function formatDuration(seconds: number | null | undefined): string | null {
+  if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return null;
+  const minutes = Math.max(1, Math.round(seconds / 60));
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours} hr` : `${hours} hr ${rest} min`;
+}
+
 /** "850 m away" / "1.2 km away" / "14 km away" */
 export function formatDistance(meters: number | null | undefined): string {
   if (meters === null || meters === undefined || !Number.isFinite(meters)) {
@@ -45,6 +55,14 @@ export function formatDistance(meters: number | null | undefined): string {
   if (meters < 1000) return `${Math.round(meters / 10) * 10} m away`;
   if (meters < 10_000) return `${(meters / 1000).toFixed(1)} km away`;
   return `${Math.round(meters / 1000)} km away`;
+}
+
+/** Same numbers without the word "away", for pairing with a duration. */
+export function formatDistanceShort(meters: number | null | undefined): string {
+  if (meters === null || meters === undefined || !Number.isFinite(meters)) return '—';
+  if (meters < 1000) return `${Math.round(meters / 10) * 10} m`;
+  if (meters < 10_000) return `${(meters / 1000).toFixed(1)} km`;
+  return `${Math.round(meters / 1000)} km`;
 }
 
 // -----------------------------------------------------------------------------

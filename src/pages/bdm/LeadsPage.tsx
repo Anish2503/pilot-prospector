@@ -17,8 +17,16 @@ import { Alert, EmptyState, LoadingBlock, StatusBadge } from '@/components/ui/Fe
 import { supabase } from '@/lib/supabase';
 import { friendlyError } from '@/lib/errors';
 import { fetchAllPages } from '@/lib/paging';
-import { cn, formatDistance, formatNumber, formatRelative, haversineMeters } from '@/lib/utils';
+import {
+  cn,
+  formatDistanceShort,
+  formatDuration,
+  formatNumber,
+  formatRelative,
+  haversineMeters,
+} from '@/lib/utils';
 import { useGeolocation } from '@/hooks/useGeolocation';
+import { useRoadDistances } from '@/hooks/useRoadDistances';
 import type { BdmStats, Lead, LeadWithDistance } from '@/types';
 
 type SortMode = 'nearest' | 'farthest' | 'recent' | 'name';
@@ -78,16 +86,26 @@ export default function BdmLeadsPage() {
     }
   }, [state.status, sortMode]);
 
+  // Road distances for the whole list, in one request rather than one per
+  // society. Straight-line is kept only to order the list while those are
+  // still being fetched - it is never shown as a driving distance.
+  const road = useRoadDistances(position, leads ?? []);
+
   const withDistance: LeadWithDistance[] = useMemo(() => {
     if (!leads) return [];
-    return leads.map((lead) => ({
-      ...lead,
-      distanceMeters:
-        position && lead.latitude !== null && lead.longitude !== null
-          ? haversineMeters(position, { latitude: lead.latitude, longitude: lead.longitude })
-          : null,
-    }));
-  }, [leads, position]);
+    return leads.map((lead) => {
+      const routed = road.distances.get(lead.id);
+      return {
+        ...lead,
+        distanceMeters:
+          position && lead.latitude !== null && lead.longitude !== null
+            ? haversineMeters(position, { latitude: lead.latitude, longitude: lead.longitude })
+            : null,
+        roadMeters: routed?.distanceMeters ?? null,
+        roadSeconds: routed?.durationSeconds ?? null,
+      };
+    });
+  }, [leads, position, road.distances]);
 
   const visible = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -105,17 +123,20 @@ export default function BdmLeadsPage() {
     switch (sortMode) {
       case 'nearest':
       case 'farthest': {
-        // Leads with no coordinates always sink to the bottom - they cannot be
-        // placed, so putting them first would be misleading.
+        // Ordering is by ROAD distance whenever it is known. Straight-line only
+        // stands in while routing is still running, so the list is usefully
+        // ordered from the first paint instead of sitting empty.
+        const metric = (lead: LeadWithDistance) => lead.roadMeters ?? lead.distanceMeters;
+
         sorted.sort((a, b) => {
-          if (a.distanceMeters === null && b.distanceMeters === null) {
-            return a.society_name.localeCompare(b.society_name);
-          }
-          if (a.distanceMeters === null) return 1;
-          if (b.distanceMeters === null) return -1;
-          return sortMode === 'nearest'
-            ? a.distanceMeters - b.distanceMeters
-            : b.distanceMeters - a.distanceMeters;
+          const da = metric(a);
+          const db = metric(b);
+          // Societies with no location at all sink to the bottom - putting
+          // them first would be misleading.
+          if (da === null && db === null) return a.society_name.localeCompare(b.society_name);
+          if (da === null) return 1;
+          if (db === null) return -1;
+          return sortMode === 'nearest' ? da - db : db - da;
         });
         break;
       }
@@ -233,18 +254,7 @@ export default function BdmLeadsPage() {
                   <p className="truncate font-semibold text-slate-900">{lead.society_name}</p>
 
                   <p className="mt-1 flex items-center gap-1.5 text-sm">
-                    {lead.distanceMeters !== null ? (
-                      <>
-                        <MapPin className="size-3.5 shrink-0 text-brand-600" aria-hidden />
-                        <span className="font-medium text-brand-700">
-                          {formatDistance(lead.distanceMeters)}
-                        </span>
-                      </>
-                    ) : lead.latitude === null ? (
-                      <span className="text-amber-600">No map location yet</span>
-                    ) : (
-                      <span className="text-slate-400">Turn on location to see distance</span>
-                    )}
+                    <LeadDistance lead={lead} roadStatus={road.status} />
                   </p>
 
                   {/*
@@ -281,7 +291,13 @@ export default function BdmLeadsPage() {
 
       {visible.length > 0 && (
         <p className="pb-2 text-center text-xs text-slate-400">
-          Distances are straight-line, not driving distance.
+          {road.status === 'ready'
+            ? 'Distances and times follow real roads, by car.'
+            : road.status === 'loading'
+              ? 'Working out driving distances…'
+              : road.status === 'unavailable'
+                ? 'Driving distances are unavailable, so straight-line distances are shown and clearly marked.'
+                : 'Turn on location to see how far each society is.'}
         </p>
       )}
     </div>
@@ -414,5 +430,61 @@ function LocationBanner({
       We use your current location to put the nearest societies at the top of your list. It is
       only read when you open this page or tap Update — you are never tracked.
     </Alert>
+  );
+}
+
+// -----------------------------------------------------------------------------
+
+/**
+ * The distance line on a society card.
+ *
+ * Road distance and straight-line distance are never allowed to look alike. A
+ * driving figure is shown plainly ("7.1 km · 18 min"); a straight-line figure
+ * is always labelled as such, so nobody plans a day around the wrong number.
+ */
+function LeadDistance({
+  lead,
+  roadStatus,
+}: {
+  lead: LeadWithDistance;
+  roadStatus: 'idle' | 'loading' | 'ready' | 'unavailable';
+}) {
+  // Nothing can be measured to a society we cannot place.
+  if (lead.latitude === null) {
+    return <span className="text-amber-600">No map location yet</span>;
+  }
+
+  if (lead.distanceMeters === null) {
+    return <span className="text-slate-400">Turn on location to see distance</span>;
+  }
+
+  // The real thing.
+  if (lead.roadMeters !== null) {
+    const minutes = formatDuration(lead.roadSeconds);
+    return (
+      <>
+        <MapPin className="size-3.5 shrink-0 text-brand-600" aria-hidden />
+        <span className="font-medium text-brand-700">
+          {formatDistanceShort(lead.roadMeters)} away
+          {minutes ? <span className="font-normal text-slate-500"> · {minutes} drive</span> : null}
+        </span>
+      </>
+    );
+  }
+
+  if (roadStatus === 'loading') {
+    return <span className="text-slate-400">Measuring driving distance…</span>;
+  }
+
+  // Routing failed, or there is no road to this point. Say so plainly rather
+  // than passing a straight line off as a drive.
+  return (
+    <>
+      <MapPin className="size-3.5 shrink-0 text-slate-400" aria-hidden />
+      <span className="text-slate-500">
+        {formatDistanceShort(lead.distanceMeters)}
+        <span className="text-amber-600"> straight-line</span>
+      </span>
+    </>
   );
 }

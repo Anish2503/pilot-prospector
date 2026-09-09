@@ -19,11 +19,13 @@ import { supabase } from '@/lib/supabase';
 import { friendlyError } from '@/lib/errors';
 import { useAuth } from '@/lib/auth';
 import { useGeolocation } from '@/hooks/useGeolocation';
+import { useRoadDistances } from '@/hooks/useRoadDistances';
 import {
   ALL_STATUSES,
   formatDate,
   formatDateTime,
-  formatDistance,
+  formatDistanceShort,
+  formatDuration,
   formatNumber,
   formatPhone,
   haversineMeters,
@@ -151,10 +153,17 @@ export default function BdmLeadDetailPage() {
     }
   }, [form, leadId]);
 
-  const distance = useMemo(() => {
+  // Straight-line, kept for the visit record: it answers "was the BDM actually
+  // standing at the society when they saved this?", which is a question about
+  // proximity, not about driving.
+  const straightLine = useMemo(() => {
     if (!lead || !position || lead.latitude === null || lead.longitude === null) return null;
     return haversineMeters(position, { latitude: lead.latitude, longitude: lead.longitude });
   }, [lead, position]);
+
+  // The driving distance shown to the BDM.
+  const road = useRoadDistances(position, lead ? [lead] : []);
+  const routed = lead ? road.distances.get(lead.id) : undefined;
 
   // ----------------------------------------------------------------- Saving
 
@@ -214,7 +223,7 @@ export default function BdmLeadDetailPage() {
       follow_up_date: form.followUpDate || null,
       latitude_at_visit: position?.latitude ?? null,
       longitude_at_visit: position?.longitude ?? null,
-      distance_from_society_m: distance,
+      distance_from_society_m: straightLine,
     });
 
     setSaving(false);
@@ -297,15 +306,25 @@ export default function BdmLeadDetailPage() {
           ) : (
             <Badge tone="amber">Units not confirmed</Badge>
           )}
-          {distance !== null && (
+          {routed?.distanceMeters != null ? (
             <Badge tone="brand">
               <MapPin className="mr-1 size-3" />
-              {formatDistance(distance)}
+              {formatDistanceShort(routed.distanceMeters)} by road
+              {formatDuration(routed.durationSeconds)
+                ? ` · ${formatDuration(routed.durationSeconds)}`
+                : ''}
             </Badge>
-          )}
+          ) : straightLine !== null && road.status === 'loading' ? (
+            <Badge tone="slate">Measuring driving distance…</Badge>
+          ) : straightLine !== null ? (
+            <Badge tone="amber">
+              <MapPin className="mr-1 size-3" />
+              {formatDistanceShort(straightLine)} straight-line
+            </Badge>
+          ) : null}
         </div>
 
-        {distance === null && lead.latitude !== null && state.status !== 'granted' && (
+        {straightLine === null && lead.latitude !== null && state.status !== 'granted' && (
           <button
             onClick={() => request()}
             className="mt-2 text-sm font-medium text-brand-700 underline underline-offset-2"

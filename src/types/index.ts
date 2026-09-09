@@ -143,10 +143,18 @@ export interface LeadWithBdm extends Lead {
   current_bdm: { id: string; name: string } | null;
 }
 
-/** A lead as the BDM sees it, with the computed distance from their phone. */
+/** A lead as the BDM sees it, with the distance from their phone. */
 export interface LeadWithDistance extends Lead {
-  /** Straight-line metres from the BDM's current position; null if unknown. */
+  /**
+   * Straight-line metres from the BDM's current position.
+   * Used only for ordering while road distances are still being fetched -
+   * it is never shown as though it were a driving distance.
+   */
   distanceMeters: number | null;
+  /** Metres along real roads, from the routing service. Null until known. */
+  roadMeters: number | null;
+  /** Driving seconds, when the routing service supplies them. */
+  roadSeconds: number | null;
 }
 
 // -----------------------------------------------------------------------------

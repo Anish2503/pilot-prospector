@@ -39,6 +39,31 @@ interface IncomingRow {
   latitude: number | null;
   longitude: number | null;
   source: string | null;
+  google_maps_url: string | null;
+  resolved_maps_url: string | null;
+  /** Where the browser worked out the coordinates from. Re-validated below. */
+  location_source: string | null;
+}
+
+/** Mirrors the CHECK constraint on leads.location_source. */
+const LOCATION_SOURCES = new Set([
+  'uploaded',
+  'google_maps_url',
+  'google_maps_redirect',
+  'geocoded',
+  'manual',
+  'unknown',
+]);
+
+/**
+ * The browser tells us where a row's coordinates came from, but a browser can
+ * be tampered with - so the value is checked against the same list the database
+ * enforces, and anything unexpected falls back to 'uploaded'.
+ */
+function locationSource(value: unknown, hasLocation: boolean): string {
+  if (!hasLocation) return 'unknown';
+  const text = typeof value === 'string' ? value : '';
+  return LOCATION_SOURCES.has(text) && text !== 'unknown' ? text : 'uploaded';
 }
 
 interface Body {
@@ -194,8 +219,10 @@ export default async function handler(request: Request): Promise<Response> {
           pincode: clean(row.pincode, 10),
           latitude: hasLocation ? latitude : null,
           longitude: hasLocation ? longitude : null,
-          location_source: hasLocation ? 'uploaded' : 'unknown',
+          location_source: locationSource(row.location_source, hasLocation),
           location_confidence: hasLocation ? 'high' : 'unverified',
+          google_maps_url: clean(row.google_maps_url, 2000),
+          resolved_maps_url: clean(row.resolved_maps_url, 2000),
         };
 
         const match = existingByKey.get(key);
@@ -222,8 +249,12 @@ export default async function handler(request: Request): Promise<Response> {
           if (match.latitude === null && hasLocation) {
             patch.latitude = latitude;
             patch.longitude = longitude;
-            patch.location_source = 'uploaded';
+            patch.location_source = locationSource(row.location_source, true);
             patch.location_confidence = 'high';
+          }
+          if (shared.google_maps_url) {
+            patch.google_maps_url = shared.google_maps_url;
+            patch.resolved_maps_url = shared.resolved_maps_url;
           }
           toUpdate.push({ id: match.id, patch });
           continue;

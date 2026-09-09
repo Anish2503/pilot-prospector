@@ -7,6 +7,7 @@ import {
   Copy,
   Download,
   FileSpreadsheet,
+  MapPin,
   MapPinOff,
   Upload,
   X,
@@ -21,7 +22,9 @@ import { cn, formatNumber } from '@/lib/utils';
 import {
   autoDetectMapping,
   buildIssueCsv,
+  detectMapsColumnByContent,
   FIELD_LABELS,
+  ORIGIN_LABELS,
   parseSpreadsheet,
   prepareRows,
   validateFile,
@@ -29,17 +32,33 @@ import {
   type LeadField,
   type ParsedSheet,
   type PreparedFile,
+  type PreparedRow,
+  type ResolvedLink,
+  type ResolvedLinks,
 } from '@/lib/importer';
 
 const BATCH_SIZE = 400;
 
-type Step = 'choose' | 'map' | 'importing' | 'done';
+/** Links per request to /api/resolve-maps-url. Must not exceed its own cap. */
+const RESOLVE_BATCH = 30;
+
+type Step = 'choose' | 'map' | 'resolving' | 'importing' | 'done';
 
 interface ImportResult {
   inserted: number;
   updated: number;
   skipped: number;
   failed: number;
+}
+
+interface ResolveApiResult {
+  url: string;
+  outcome: string;
+  resolvedUrl: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  precision: 'place' | 'viewport' | null;
+  message?: string;
 }
 
 export default function UploadPage() {
@@ -55,14 +74,18 @@ export default function UploadPage() {
   const [parsing, setParsing] = useState(false);
 
   const [progress, setProgress] = useState({ done: 0, total: 0 });
+  // Results of following shortened Google Maps links, keyed by the original URL.
+  const [resolvedLinks, setResolvedLinks] = useState<ResolvedLinks>(new Map());
+  const [resolveProgress, setResolveProgress] = useState({ done: 0, total: 0 });
   const [result, setResult] = useState<ImportResult | null>(null);
+  const [locationResult, setLocationResult] = useState<PreparedFile['location'] | null>(null);
   const cancelled = useRef(false);
 
   // The preview is recalculated whenever the mapping changes - instantly,
   // because the whole file is already in memory.
   const prepared: PreparedFile | null = useMemo(
-    () => (parsed ? prepareRows(parsed, mapping) : null),
-    [parsed, mapping],
+    () => (parsed ? prepareRows(parsed, mapping, resolvedLinks) : null),
+    [parsed, mapping, resolvedLinks],
   );
 
   // ---------------------------------------------------------------- Choose
@@ -79,9 +102,22 @@ export default function UploadPage() {
     setParsing(true);
     try {
       const sheet = await parseSpreadsheet(chosen);
+      const guessed = autoDetectMapping(sheet.headers);
+
+      // A Maps column is often headed something unhelpful like "Link" or
+      // nothing at all, so if the heading did not give it away, look at what
+      // the cells actually contain.
+      if (!guessed.google_maps_url) {
+        const byContent = detectMapsColumnByContent(sheet);
+        if (byContent && !Object.values(guessed).includes(byContent)) {
+          guessed.google_maps_url = byContent;
+        }
+      }
+
       setFile(chosen);
       setParsed(sheet);
-      setMapping(autoDetectMapping(sheet.headers));
+      setMapping(guessed);
+      setResolvedLinks(new Map());
       setStep('map');
     } catch (cause) {
       setError(
@@ -99,12 +135,105 @@ export default function UploadPage() {
     setParsing(true);
     try {
       const sheet = await parseSpreadsheet(file, sheetName);
+      const guessed = autoDetectMapping(sheet.headers);
+      if (!guessed.google_maps_url) {
+        const byContent = detectMapsColumnByContent(sheet);
+        if (byContent && !Object.values(guessed).includes(byContent)) {
+          guessed.google_maps_url = byContent;
+        }
+      }
       setParsed(sheet);
-      setMapping(autoDetectMapping(sheet.headers));
+      setMapping(guessed);
+      setResolvedLinks(new Map());
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not read that sheet.');
     } finally {
       setParsing(false);
+    }
+  }
+
+  // ------------------------------------------------------- Google Maps links
+
+  /**
+   * Follows the shortened Google Maps links in this file.
+   *
+   * Sent to the server in batches, because a browser cannot follow a redirect
+   * to another site itself, and because thousands of one-at-a-time requests
+   * would be painfully slow. Results are remembered, so re-running this or
+   * changing an unrelated column mapping does not fetch anything twice.
+   *
+   * Returns the merged results so the import can use them immediately, without
+   * waiting for React to re-render.
+   */
+  const resolveLinks = useCallback(
+    async (urls: string[]): Promise<ResolvedLinks> => {
+      const merged: ResolvedLinks = new Map(resolvedLinks);
+      if (urls.length === 0) return merged;
+
+      setResolveProgress({ done: 0, total: urls.length });
+
+      for (let index = 0; index < urls.length; index += RESOLVE_BATCH) {
+        if (cancelled.current) break;
+
+        const batch = urls.slice(index, index + RESOLVE_BATCH);
+
+        try {
+          const response = await api.post<{ results: ResolveApiResult[] }>(
+            '/resolve-maps-url',
+            { urls: batch },
+          );
+
+          for (const item of response.results) {
+            merged.set(item.url, {
+              latitude: item.latitude,
+              longitude: item.longitude,
+              resolvedUrl: item.resolvedUrl,
+              precision: item.precision,
+              message: item.message,
+            } satisfies ResolvedLink);
+          }
+        } catch (cause) {
+          // A failed batch must not sink the whole import - those rows simply
+          // stay unresolved and are flagged for review.
+          console.error('[resolve-maps-url]', cause);
+          for (const url of batch) {
+            if (!merged.has(url)) {
+              merged.set(url, {
+                latitude: null,
+                longitude: null,
+                resolvedUrl: null,
+                precision: null,
+                message: 'This Google Maps link could not be checked. Please review this lead.',
+              });
+            }
+          }
+        }
+
+        setResolveProgress({ done: Math.min(index + RESOLVE_BATCH, urls.length), total: urls.length });
+      }
+
+      setResolvedLinks(merged);
+      return merged;
+    },
+    [resolvedLinks],
+  );
+
+  /** The "Check N links now" button on the preview. */
+  async function resolveNow() {
+    if (!prepared || prepared.unresolvedUrls.length === 0) return;
+
+    cancelled.current = false;
+    setStep('resolving');
+    setError(null);
+
+    try {
+      const merged = await resolveLinks(prepared.unresolvedUrls);
+      const found = [...merged.values()].filter((r) => r.latitude !== null).length;
+      toast.success(`${formatNumber(found)} locations found from Google Maps links.`);
+    } catch (cause) {
+      setError(friendlyError(cause, 'Could not check the Google Maps links.'));
+    } finally {
+      setStep('map');
     }
   }
 
@@ -120,9 +249,22 @@ export default function UploadPage() {
     }
 
     cancelled.current = false;
-    setStep('importing');
-    setProgress({ done: 0, total: rows.length });
     setError(null);
+
+    // Any Maps links still unchecked are followed first, so leads arrive with
+    // their coordinates already worked out rather than needing a second pass.
+    let links = resolvedLinks;
+    if (prepared.unresolvedUrls.length > 0) {
+      setStep('resolving');
+      links = await resolveLinks(prepared.unresolvedUrls);
+    }
+
+    // Recalculated against the freshly resolved links.
+    const finalPrepared = prepareRows(parsed, mapping, links);
+    const finalRows = finalPrepared.validRows;
+
+    setStep('importing');
+    setProgress({ done: 0, total: finalRows.length });
 
     const totals: ImportResult = { inserted: 0, updated: 0, skipped: 0, failed: 0 };
     let jobId: string | null = null;
@@ -136,7 +278,7 @@ export default function UploadPage() {
       });
       jobId = started.jobId;
 
-      for (let index = 0; index < rows.length; index += BATCH_SIZE) {
+      for (let index = 0; index < finalRows.length; index += BATCH_SIZE) {
         if (cancelled.current) {
           await api.post('/import-leads', { action: 'cancel', jobId });
           setStep('map');
@@ -144,7 +286,7 @@ export default function UploadPage() {
           return;
         }
 
-        const batch = rows.slice(index, index + BATCH_SIZE).map((row) => ({
+        const batch = finalRows.slice(index, index + BATCH_SIZE).map((row) => ({
           rowNumber: row.rowNumber,
           society_name: row.society_name,
           total_units: row.total_units,
@@ -156,6 +298,9 @@ export default function UploadPage() {
           latitude: row.latitude,
           longitude: row.longitude,
           source: row.source,
+          google_maps_url: row.google_maps_url,
+          resolved_maps_url: row.resolved_maps_url,
+          location_source: row.location_origin,
         }));
 
         const batchResult = await api.post<ImportResult>('/import-leads', {
@@ -170,12 +315,16 @@ export default function UploadPage() {
         totals.skipped += batchResult.skipped;
         totals.failed += batchResult.failed;
 
-        setProgress({ done: Math.min(index + BATCH_SIZE, rows.length), total: rows.length });
+        setProgress({
+          done: Math.min(index + BATCH_SIZE, finalRows.length),
+          total: finalRows.length,
+        });
       }
 
       await api.post('/import-leads', { action: 'finish', jobId });
 
       setResult(totals);
+      setLocationResult(finalPrepared.location);
       setStep('done');
       toast.success(`${formatNumber(totals.inserted)} leads imported.`);
     } catch (cause) {
@@ -207,8 +356,10 @@ export default function UploadPage() {
     setParsed(null);
     setMapping({});
     setResult(null);
+    setLocationResult(null);
     setError(null);
     setProgress({ done: 0, total: 0 });
+    setResolvedLinks(new Map());
   }
 
   // ---------------------------------------------------------------- Render
@@ -248,8 +399,43 @@ export default function UploadPage() {
           onBack={reset}
           onImport={runImport}
           onDownloadIssues={downloadIssues}
+          onResolveLinks={resolveNow}
           parsing={parsing}
         />
+      )}
+
+      {step === 'resolving' && (
+        <div className="card p-8 text-center">
+          <Spinner className="mx-auto size-8" />
+          <p className="mt-4 text-base font-medium text-slate-900">
+            Checking Google Maps links...
+          </p>
+          <p className="mt-1 text-sm text-slate-500">
+            {formatNumber(resolveProgress.done)} of {formatNumber(resolveProgress.total)}
+          </p>
+          <div className="mx-auto mt-5 h-2.5 max-w-md overflow-hidden rounded-full bg-slate-200">
+            <div
+              className="h-full rounded-full bg-brand-600 transition-[width] duration-300"
+              style={{
+                width: `${resolveProgress.total ? Math.round((resolveProgress.done / resolveProgress.total) * 100) : 0}%`,
+              }}
+            />
+          </div>
+          <p className="mt-3 text-sm text-slate-400">
+            Each shortened link has to be opened to find out where it points.
+          </p>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="mt-4"
+            icon={<X className="size-4" />}
+            onClick={() => {
+              cancelled.current = true;
+            }}
+          >
+            Skip the rest
+          </Button>
+        </div>
       )}
 
       {step === 'importing' && (
@@ -264,6 +450,7 @@ export default function UploadPage() {
       {step === 'done' && result && (
         <ImportDone
           result={result}
+          location={locationResult}
           hadError={Boolean(error)}
           onUploadAnother={reset}
           onViewLeads={() => navigate('/admin/leads')}
@@ -281,7 +468,10 @@ function Steps({ current }: { current: Step }) {
     { key: 'map', label: 'Check columns' },
     { key: 'done', label: 'Import' },
   ];
-  const activeIndex = current === 'importing' ? 2 : steps.findIndex((s) => s.key === current);
+  const activeIndex =
+    current === 'importing' || current === 'resolving'
+      ? 2
+      : steps.findIndex((s) => s.key === current);
 
   return (
     <ol className="flex items-center gap-2 text-sm">
@@ -391,6 +581,7 @@ function ChooseFile({ onFile, parsing }: { onFile: (file: File) => void; parsing
 
 const MAPPABLE_FIELDS: LeadField[] = [
   'society_name',
+  'google_maps_url',
   'total_units',
   'address',
   'area',
@@ -414,6 +605,7 @@ function MapAndPreview({
   onBack,
   onImport,
   onDownloadIssues,
+  onResolveLinks,
   parsing,
 }: {
   parsed: ParsedSheet;
@@ -426,6 +618,7 @@ function MapAndPreview({
   onBack: () => void;
   onImport: () => void;
   onDownloadIssues: () => void;
+  onResolveLinks: () => void;
   parsing: boolean;
 }) {
   const { counts } = prepared;
@@ -504,6 +697,13 @@ function MapAndPreview({
         )}
       </div>
 
+      {/* ------------------------------------------------------------ Location */}
+      <LocationPanel
+        location={prepared.location}
+        hasMapsColumn={Boolean(mapping.google_maps_url)}
+        onResolveLinks={onResolveLinks}
+      />
+
       {/* ------------------------------------------------------------- Mapping */}
       <div className="card p-4">
         <h2 className="text-sm font-semibold text-slate-700">Which column is which?</h2>
@@ -557,6 +757,7 @@ function MapAndPreview({
                   <th className="px-4 py-2 font-medium">Area</th>
                   <th className="px-4 py-2 font-medium">City</th>
                   <th className="px-4 py-2 font-medium">Location</th>
+                  <th className="px-4 py-2 font-medium">Source</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -572,12 +773,17 @@ function MapAndPreview({
                     </td>
                     <td className="px-4 py-2.5 text-slate-600">{row.area ?? '—'}</td>
                     <td className="px-4 py-2.5 text-slate-600">{row.city ?? '—'}</td>
-                    <td className="px-4 py-2.5 text-slate-600">
-                      {row.latitude === null ? (
-                        <span className="text-amber-600">Will need locating</span>
-                      ) : (
+                    <td className="px-4 py-2.5 whitespace-nowrap text-slate-600">
+                      {row.latitude !== null ? (
                         `${row.latitude.toFixed(4)}, ${row.longitude!.toFixed(4)}`
+                      ) : row.needs_link_resolution ? (
+                        <span className="text-blue-600">Link not checked yet</span>
+                      ) : (
+                        <span className="text-amber-600">Needs review</span>
                       )}
+                    </td>
+                    <td className="px-4 py-2.5 whitespace-nowrap">
+                      <LocationSourceBadge row={row} />
                     </td>
                   </tr>
                 ))}
@@ -733,11 +939,13 @@ function ImportProgress({
 
 function ImportDone({
   result,
+  location,
   hadError,
   onUploadAnother,
   onViewLeads,
 }: {
   result: ImportResult;
+  location: PreparedFile['location'] | null;
   hadError: boolean;
   onUploadAnother: () => void;
   onViewLeads: () => void;
@@ -764,12 +972,224 @@ function ImportDone({
         <Tally label="Failed" value={result.failed} tone={result.failed ? 'red' : 'slate'} />
       </dl>
 
+      {location && <ImportLocationSummary location={location} />}
+
       <div className="mt-7 flex flex-col justify-center gap-2 sm:flex-row">
         <Button variant="secondary" onClick={onUploadAnother}>
           Upload another file
         </Button>
         <Button onClick={onViewLeads}>View leads</Button>
       </div>
+    </div>
+  );
+}
+
+// -----------------------------------------------------------------------------
+
+/**
+ * Where each row's coordinates come from, shown BEFORE anything is imported.
+ *
+ * The point is that an admin can see whether the Google Maps links actually
+ * worked before committing - rather than importing four thousand rows and
+ * discovering afterwards that none of them can be placed on the map.
+ */
+function LocationPanel({
+  location,
+  hasMapsColumn,
+  onResolveLinks,
+}: {
+  location: PreparedFile['location'];
+  hasMapsColumn: boolean;
+  onResolveLinks: () => void;
+}) {
+  const fromMaps = location.fromMapsUrl + location.fromMapsRedirect;
+
+  return (
+    <div className="card p-4">
+      <h2 className="flex items-center gap-1.5 text-sm font-semibold text-slate-700">
+        <MapPin className="size-4" />
+        Where the locations come from
+      </h2>
+
+      {!hasMapsColumn && (
+        <Alert tone="info" className="mt-3">
+          No Google Maps column is mapped. If your file has one, choose it under{' '}
+          <strong>Google Maps URL</strong> below — it is the most accurate way to place a society
+          on the map.
+        </Alert>
+      )}
+
+      <dl className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+        <LocationTally
+          label="Coordinates in the file"
+          value={location.fromUploadedCoordinates}
+          tone="emerald"
+        />
+        <LocationTally label="From Google Maps links" value={fromMaps} tone="emerald" />
+        <LocationTally
+          label="Links still to check"
+          value={location.needsResolving}
+          tone={location.needsResolving > 0 ? 'blue' : 'slate'}
+        />
+        <LocationTally
+          label="Need review"
+          value={location.noLocation}
+          tone={location.noLocation > 0 ? 'amber' : 'slate'}
+        />
+      </dl>
+
+      {location.invalidUrl > 0 && (
+        <p className="mt-2 text-sm text-amber-700">
+          {formatNumber(location.invalidUrl)}{' '}
+          {location.invalidUrl === 1 ? 'row has' : 'rows have'} something in the Google Maps column
+          that is not a Google Maps link.
+        </p>
+      )}
+
+      {location.needsResolving > 0 && (
+        <div className="mt-3 rounded-lg bg-blue-50 p-3">
+          <p className="text-sm text-blue-900">
+            {formatNumber(location.needsResolving)}{' '}
+            {location.needsResolving === 1 ? 'row uses a' : 'rows use'} shortened Google Maps{' '}
+            {location.needsResolving === 1 ? 'link' : 'links'} (like{' '}
+            <code className="font-mono text-xs">maps.app.goo.gl</code>). Those have to be opened to
+            find out where they point.
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <Button size="sm" icon={<MapPin className="size-4" />} onClick={onResolveLinks}>
+              Check {formatNumber(location.needsResolving)}{' '}
+              {location.needsResolving === 1 ? 'link' : 'links'} now
+            </Button>
+            <span className="text-xs text-blue-800/80">
+              Or leave it — they are checked automatically when you import.
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LocationTally({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: 'emerald' | 'amber' | 'blue' | 'slate';
+}) {
+  const tones = {
+    emerald: 'bg-emerald-50 text-emerald-700',
+    amber: 'bg-amber-50 text-amber-700',
+    blue: 'bg-blue-50 text-blue-700',
+    slate: 'bg-slate-50 text-slate-900',
+  };
+  return (
+    <div className={cn('rounded-lg p-3', tones[tone])}>
+      <dd className="text-2xl font-semibold tabular-nums">{formatNumber(value)}</dd>
+      <dt className="mt-0.5 text-xs opacity-80">{label}</dt>
+    </div>
+  );
+}
+
+/** A short label saying how this one row got its coordinates. */
+function LocationSourceBadge({ row }: { row: PreparedRow }) {
+  if (row.needs_link_resolution) return <Badge tone="brand">Link to check</Badge>;
+
+  switch (row.location_origin) {
+    case 'uploaded':
+      return <Badge tone="slate">{ORIGIN_LABELS.uploaded}</Badge>;
+    case 'google_maps_url':
+      return <Badge tone="emerald">Google Maps link</Badge>;
+    case 'google_maps_redirect':
+      return <Badge tone="emerald">Maps link (followed)</Badge>;
+    case 'geocoded':
+      return <Badge tone="amber">Estimated</Badge>;
+    default:
+      return <Badge tone="amber">Needs review</Badge>;
+  }
+}
+
+// -----------------------------------------------------------------------------
+
+/**
+ * The location breakdown on the completion screen.
+ *
+ * An import is not a success if the coordinates failed. Saying "4,235 leads
+ * imported" while hundreds of them cannot be placed on a map - and so can never
+ * be sorted by distance for a BDM - would be misleading, so the numbers are
+ * spelled out here whether they are good or not.
+ */
+function ImportLocationSummary({ location }: { location: PreparedFile['location'] }) {
+  const fromMaps = location.fromMapsUrl + location.fromMapsRedirect;
+  const total =
+    location.fromUploadedCoordinates + fromMaps + location.noLocation + location.needsResolving;
+  const percent = total > 0 ? Math.round((location.located / total) * 100) : 0;
+
+  return (
+    <div className="mx-auto mt-6 max-w-md text-left">
+      <div className="mb-2 flex items-baseline justify-between">
+        <h3 className="text-sm font-semibold text-slate-700">Location coverage</h3>
+        <span className="text-sm font-semibold tabular-nums text-slate-900">{percent}%</span>
+      </div>
+
+      <div className="h-2.5 overflow-hidden rounded-full bg-slate-200">
+        <div
+          className={cn(
+            'h-full rounded-full transition-[width] duration-500',
+            percent >= 90 ? 'bg-emerald-600' : percent >= 60 ? 'bg-amber-500' : 'bg-red-500',
+          )}
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+
+      <dl className="mt-3 space-y-1 text-sm">
+        <SummaryLine label="From coordinates in your file" value={location.fromUploadedCoordinates} />
+        <SummaryLine label="From Google Maps links" value={location.fromMapsUrl} />
+        <SummaryLine label="From Google Maps links (followed)" value={location.fromMapsRedirect} />
+        <SummaryLine label="Could not be located" value={location.noLocation} tone="amber" />
+        {location.needsResolving > 0 && (
+          <SummaryLine label="Links left unchecked" value={location.needsResolving} tone="amber" />
+        )}
+      </dl>
+
+      {location.noLocation + location.needsResolving > 0 && (
+        <Alert tone="warning" className="mt-3">
+          {formatNumber(location.noLocation + location.needsResolving)}{' '}
+          {location.noLocation + location.needsResolving === 1 ? 'lead has' : 'leads have'} no
+          usable location, so {location.noLocation + location.needsResolving === 1 ? 'it' : 'they'}{' '}
+          will not appear on the map and cannot be sorted by distance for a BDM. Find them under{' '}
+          <strong>Locations</strong>, where you can look them up or enter the coordinates by hand.
+        </Alert>
+      )}
+    </div>
+  );
+}
+
+function SummaryLine({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone?: 'amber';
+}) {
+  if (value === 0 && !tone) return null;
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <dt className={cn('text-slate-600', tone === 'amber' && value > 0 && 'text-amber-700')}>
+        {label}
+      </dt>
+      <dd
+        className={cn(
+          'font-semibold tabular-nums text-slate-900',
+          tone === 'amber' && value > 0 && 'text-amber-700',
+        )}
+      >
+        {formatNumber(value)}
+      </dd>
     </div>
   );
 }

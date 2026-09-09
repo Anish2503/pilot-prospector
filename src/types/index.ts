@@ -11,7 +11,14 @@ export type LeadStatus =
   | 'follow_up'
   | 'completed';
 
-export type LocationSource = 'uploaded' | 'geocoded' | 'manual' | 'unknown';
+/** Must match the CHECK constraint on leads.location_source (migration 007). */
+export type LocationSource =
+  | 'uploaded'
+  | 'google_maps_url'
+  | 'google_maps_redirect'
+  | 'geocoded'
+  | 'manual'
+  | 'unknown';
 export type DataConfidence = 'high' | 'medium' | 'low' | 'unverified';
 export type AssignmentStatus = 'active' | 'reassigned' | 'revoked';
 export type ActorType = 'admin' | 'bdm' | 'system';
@@ -93,6 +100,11 @@ export interface Lead {
   geocoded_at: string | null;
   geocode_query: string | null;
   geocode_display_name: string | null;
+
+  /** The Google Maps link from the uploaded file, if there was one. */
+  google_maps_url: string | null;
+  /** Where a shortened link ended up after its redirects were followed. */
+  resolved_maps_url: string | null;
 
   address: string | null;
   area: string | null;

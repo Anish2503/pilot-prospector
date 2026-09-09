@@ -164,6 +164,10 @@ export function ConfidenceTag({
   confidence?: string;
 }) {
   if (source === 'uploaded') return <Badge tone="slate">From spreadsheet</Badge>;
+  if (source === 'google_maps_url') return <Badge tone="emerald">From Google Maps link</Badge>;
+  if (source === 'google_maps_redirect') {
+    return <Badge tone="emerald">From Google Maps link (followed)</Badge>;
+  }
   if (source === 'manual') return <Badge tone="emerald">Confirmed by admin</Badge>;
   if (source === 'bdm_visit') return <Badge tone="emerald">Confirmed on site</Badge>;
   if (source === 'geocoded') {

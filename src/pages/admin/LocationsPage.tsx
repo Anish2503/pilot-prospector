@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Check,
+  ExternalLink,
   MapPin,
   MapPinOff,
   Pause,
@@ -430,6 +431,18 @@ function ReviewRow({ lead, onResolved }: { lead: Lead; onResolved: () => void })
           </p>
           {lead.review_reason && (
             <p className="mt-1 text-sm text-amber-700">{lead.review_reason}</p>
+          )}
+
+          {lead.google_maps_url && (
+            <a
+              href={lead.google_maps_url}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-1 inline-flex items-center gap-1 text-sm font-medium text-brand-700 underline underline-offset-2"
+            >
+              Open the Google Maps link from the spreadsheet
+              <ExternalLink className="size-3.5" />
+            </a>
           )}
         </div>
 

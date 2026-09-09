@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   Building2,
+  ExternalLink,
   History,
   MapPin,
   MessageSquare,
@@ -200,6 +201,22 @@ export function LeadDetailDialog({
                       confidence={lead.location_confidence}
                     />
                   </div>
+                </Detail>
+
+                <Detail label="Google Maps link">
+                  {lead.google_maps_url ? (
+                    <a
+                      href={lead.resolved_maps_url ?? lead.google_maps_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-brand-700 underline underline-offset-2"
+                    >
+                      Open Google Maps
+                      <ExternalLink className="size-3.5" />
+                    </a>
+                  ) : (
+                    <span className="text-slate-400">Not supplied</span>
+                  )}
                 </Detail>
 
                 <Detail label="Address">{lead.address ?? '—'}</Detail>

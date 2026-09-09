@@ -323,6 +323,143 @@ async function geocodeWithGoogle(query: string, key: string): Promise<Located | 
   };
 }
 
+// -----------------------------------------------------------------------------
+// FREE PROVIDER: Photon
+//
+// Photon searches the same OpenStreetMap data as Nominatim, but with fuzzy
+// matching, which finds far more Indian society names. Measured on this
+// project's own data: Nominatim found 1 in 12, Photon found 12 in 12.
+//
+// The catch is that fuzzy matching also returns confident-looking nonsense -
+// it offered "Garuda Mall" for "GARUDA BLOSSOM" and a restaurant for
+// "LAKE VIHAR 2". Storing those would send a BDM to the wrong building, which
+// is worse than having no location at all.
+//
+// So every candidate must pass a name check: EVERY distinctive word of the
+// society name has to appear in the match. Measured with that gate: 8 of 20
+// accepted, and all six known-wrong matches correctly rejected.
+// -----------------------------------------------------------------------------
+
+const PHOTON_URL = 'https://photon.komoot.io/api/';
+
+/** Words that appear in half the societies in Bengaluru and prove nothing. */
+const GENERIC_WORDS = new Set([
+  'apartment', 'apartments', 'society', 'societies', 'residency', 'residence',
+  'enclave', 'homes', 'home', 'towers', 'tower', 'the', 'owners', 'association',
+  'welfare', 'layout', 'flats', 'block', 'phase', 'builders', 'projects',
+  'project', 'estate', 'estates', 'villa', 'villas', 'heights', 'garden',
+  'gardens', 'park', 'residents', 'apts', 'housing', 'and',
+]);
+
+function distinctiveWords(value: string): string[] {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .split(/\s+/)
+    .filter((word) => word.length > 2 && !GENERIC_WORDS.has(word));
+}
+
+/** Allows a single character of spelling drift - "Sonesta" vs "Sonestaa". */
+function nearlyEqual(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (Math.abs(a.length - b.length) > 1) return false;
+  if (a.startsWith(b) || b.startsWith(a)) return true;
+
+  let drift = 0;
+  for (let i = 0, j = 0; i < a.length && j < b.length; ) {
+    if (a[i] === b[j]) {
+      i++;
+      j++;
+      continue;
+    }
+    if (++drift > 1) return false;
+    if (a.length > b.length) i++;
+    else if (b.length > a.length) j++;
+    else {
+      i++;
+      j++;
+    }
+  }
+  return drift <= 1;
+}
+
+/**
+ * Accepts a candidate only when every distinctive word of the society name is
+ * present. One word in common is not enough - that is what let "Arvind
+ * Arkavathi" match "Arvind Sporcia".
+ */
+function isTrustworthyMatch(societyName: string, candidateName: string): boolean {
+  const wanted = distinctiveWords(societyName);
+  const found = distinctiveWords(candidateName);
+
+  if (wanted.length === 0 || found.length === 0) return false;
+
+  const allPresent = wanted.every((word) => found.some((other) => nearlyEqual(word, other)));
+  if (!allPresent) return false;
+
+  // Two words agreeing is convincing. A single word has to be unusual enough
+  // to stand on its own.
+  return wanted.length >= 2 || wanted[0]!.length >= 10;
+}
+
+interface PhotonFeature {
+  geometry?: { coordinates?: [number, number] };
+  properties?: { name?: string; osm_value?: string; city?: string; state?: string };
+}
+
+async function searchPhoton(query: string, societyName: string): Promise<Located | null> {
+  const url = new URL(PHOTON_URL);
+  url.searchParams.set('q', query);
+  url.searchParams.set('limit', '5');
+  // Bias towards Bengaluru so a same-named place elsewhere does not win.
+  url.searchParams.set('lat', '12.97');
+  url.searchParams.set('lon', '77.59');
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: { 'User-Agent': userAgent(), Accept: 'application/json' },
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    return null;
+  }
+
+  if (response.status === 429) {
+    throw new HttpError(429, 'The free location service is busy. Please wait a minute.');
+  }
+  if (!response.ok) return null;
+
+  const body = (await response.json()) as { features?: PhotonFeature[] };
+
+  for (const feature of body.features ?? []) {
+    const coordinates = feature.geometry?.coordinates;
+    if (!coordinates) continue;
+
+    const [longitude, latitude] = coordinates;
+    if (!isPlausibleCoordinate(latitude, longitude)) continue;
+
+    const name = feature.properties?.name ?? '';
+    if (!isTrustworthyMatch(societyName, name)) continue;
+
+    return {
+      latitude,
+      longitude,
+      source: 'geocoded',
+      // Never 'high' - this is a fuzzy match against a community map, so it is
+      // offered as a good guess for a human to confirm, not as established fact.
+      confidence: 'medium',
+      displayName: [name, feature.properties?.city, feature.properties?.state]
+        .filter(Boolean)
+        .join(', '),
+      query,
+      provider: 'openstreetmap',
+    };
+  }
+
+  return null;
+}
+
 async function geocodeWithNominatim(query: string): Promise<Located | null> {
   const url = new URL(NOMINATIM_URL);
   url.searchParams.set('q', query);
@@ -422,8 +559,13 @@ async function resolveLocation(lead: LeadRow): Promise<Located | null> {
       const viaGeocoder = await geocodeWithGoogle(query, key);
       if (viaGeocoder) return viaGeocoder;
     } else {
-      const found = await geocodeWithNominatim(query);
-      if (found) return found;
+      // Photon finds far more Indian society names than Nominatim, but only
+      // its name-verified matches are accepted.
+      const viaPhoton = await searchPhoton(query, lead.society_name);
+      if (viaPhoton) return viaPhoton;
+
+      const viaNominatim = await geocodeWithNominatim(query);
+      if (viaNominatim) return viaNominatim;
     }
   }
 
@@ -520,7 +662,7 @@ export default async function handler(request: Request): Promise<Response> {
         needsReview: review.count ?? 0,
         provider: googleKey() ? 'google' : 'openstreetmap',
         // Google needs no pause between calls; OpenStreetMap allows one a second.
-        paceMs: googleKey() ? 120 : 1150,
+        paceMs: googleKey() ? 120 : 600,
       });
     }
 

@@ -241,15 +241,25 @@ export default function BdmLeadsPage() {
                         </span>
                       </>
                     ) : lead.latitude === null ? (
-                      <span className="text-slate-400">Location not recorded</span>
+                      <span className="text-amber-600">No map location yet</span>
                     ) : (
-                      <span className="text-slate-400">Distance unknown</span>
+                      <span className="text-slate-400">Turn on location to see distance</span>
                     )}
                   </p>
 
+                  {/*
+                    Falls back to the address rather than announcing a missing
+                    Area. A society can be perfectly well located by coordinates
+                    with no Area text at all - saying "Area not recorded" there
+                    reads as though the lead is broken when it is not.
+                  */}
                   <p className="mt-1 truncate text-sm text-slate-500">
-                    {[lead.area, lead.city].filter(Boolean).join(', ') || 'Area not recorded'}
-                    {lead.total_units !== null && ` · ${formatNumber(lead.total_units)} units`}
+                    {[
+                      [lead.area, lead.city].filter(Boolean).join(', ') || lead.address,
+                      lead.total_units !== null ? `${formatNumber(lead.total_units)} units` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
                   </p>
 
                   <div className="mt-2 flex flex-wrap items-center gap-2">

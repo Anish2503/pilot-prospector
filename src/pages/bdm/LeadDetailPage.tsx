@@ -285,7 +285,9 @@ export default function BdmLeadDetailPage() {
 
         <p className="mt-1 text-sm text-slate-500">
           {[lead.address, lead.area, lead.city].filter(Boolean).join(', ') ||
-            'No address recorded'}
+            (lead.latitude !== null
+              ? 'Located on the map - no street address recorded'
+              : 'No address recorded')}
         </p>
 
         <div className="mt-3 flex flex-wrap items-center gap-2">

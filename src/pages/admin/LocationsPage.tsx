@@ -22,8 +22,11 @@ import { friendlyError } from '@/lib/errors';
 import { cn, formatNumber, sleep } from '@/lib/utils';
 import type { Lead } from '@/types';
 
-/** Nominatim's policy is one request per second. We leave a little headroom. */
-const PACE_MS = 1150;
+/**
+ * How long to wait between lookups. OpenStreetMap allows one per second; a
+ * Google key removes that limit. The server tells us which applies.
+ */
+const DEFAULT_PACE_MS = 1150;
 
 interface Candidate {
   latitude: number;
@@ -44,8 +47,13 @@ interface NextResponse {
 
 interface Stats {
   missing: number;
+  /** Of those, how many at least have a Google Maps link to work from. */
+  missingWithMapsLink: number;
   geocoded: number;
+  fromMapsLink: number;
   needsReview: number;
+  provider: 'google' | 'openstreetmap';
+  paceMs: number;
 }
 
 interface LogEntry {
@@ -126,7 +134,7 @@ export default function LocationsPage() {
           ].slice(0, 60),
         );
 
-        await sleep(PACE_MS);
+        await sleep(stats?.paceMs ?? DEFAULT_PACE_MS);
       }
     } catch (cause) {
       setError(
@@ -142,7 +150,9 @@ export default function LocationsPage() {
   // ---------------------------------------------------------------- Render
 
   const missing = stats?.missing ?? 0;
-  const estimatedMinutes = Math.ceil((missing * PACE_MS) / 60000);
+  const pace = stats?.paceMs ?? DEFAULT_PACE_MS;
+  const estimatedMinutes = Math.max(1, Math.ceil((missing * pace) / 60000));
+  const usingGoogle = stats?.provider === 'google';
 
   return (
     <div className="space-y-5">
@@ -167,11 +177,11 @@ export default function LocationsPage() {
           loading={!stats}
         />
         <StatCard
-          label="Found automatically"
-          value={stats?.geocoded}
-          sublabel="Estimated, not confirmed"
+          label="From Google Maps links"
+          value={stats?.fromMapsLink}
+          sublabel="Read from the link itself"
           icon={MapPin}
-          tone="brand"
+          tone="emerald"
           loading={!stats}
         />
         <StatCard
@@ -188,10 +198,30 @@ export default function LocationsPage() {
         <h2 className="text-sm font-semibold text-slate-700">Automatic lookup</h2>
 
         <p className="mt-2 text-sm leading-relaxed text-slate-600">
-          This uses OpenStreetMap's free service, which allows one lookup per second. It is
-          completely free and needs no account, but it is slow for large batches and it is less
-          accurate on Indian society names than a paid service would be.
+          For each society this tries, in order: coordinates already inside its Google Maps link,
+          then following the link if it is a shortened one, then looking the name and address up.
         </p>
+
+        {usingGoogle ? (
+          <Alert tone="success" className="mt-3">
+            Using <strong>Google</strong> for the lookups. Much better at recognising Indian
+            society names, and there is no one-per-second limit.
+          </Alert>
+        ) : (
+          <Alert tone="info" className="mt-3">
+            Using <strong>OpenStreetMap</strong> — free, no account, but limited to one lookup per
+            second and, measured on your own data, it finds roughly 4 societies in 10 by name.
+            Adding a <code className="font-mono text-xs">GOOGLE_MAPS_API_KEY</code> switches this
+            to Google, which is far more accurate on Indian society names.
+          </Alert>
+        )}
+
+        {(stats?.missingWithMapsLink ?? 0) > 0 && (
+          <p className="mt-2 text-sm text-slate-600">
+            {formatNumber(stats!.missingWithMapsLink)} of these have a Google Maps link to work
+            from, which is tried first.
+          </p>
+        )}
 
         {missing > 0 && (
           <p className="mt-2 text-sm text-slate-500">

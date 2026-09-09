@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   Building2,
+  Crosshair,
   ExternalLink,
   History,
   MapPin,
@@ -21,6 +22,7 @@ import { Input, Select } from '@/components/ui/Field';
 import { Alert, Badge, ConfidenceTag, LoadingBlock, StatusBadge } from '@/components/ui/Feedback';
 import { useToast } from '@/components/ui/Toast';
 import { supabase } from '@/lib/supabase';
+import { api } from '@/lib/api';
 import { friendlyError } from '@/lib/errors';
 import { formatDate, formatDateTime, formatNumber, formatPhone } from '@/lib/utils';
 import type { Bdm, Lead, LeadAssignment, LeadVisit, LeadWithBdm } from '@/types';
@@ -224,6 +226,12 @@ export function LeadDetailDialog({
                 <Detail label="City">{lead.city ?? '—'}</Detail>
                 <Detail label="Pincode">{lead.pincode ?? '—'}</Detail>
               </dl>
+            )}
+
+            {/* A lead with no coordinates cannot appear on the map or be
+                sorted by distance for a BDM, so offer to fix it right here. */}
+            {!editing && lead.latitude === null && (
+              <ResolveLocationButton lead={lead} onResolved={onChanged} />
             )}
           </section>
 
@@ -628,6 +636,112 @@ function EditLeadForm({
           Cancel
         </Button>
       </div>
+    </div>
+  );
+}
+
+// -----------------------------------------------------------------------------
+
+/**
+ * "Resolve location" for a single lead.
+ *
+ * Runs the same chain the batch tool does - coordinates in the Maps link,
+ * following a shortened link, then a name/address lookup - and reports exactly
+ * which of those produced the answer.
+ */
+function ResolveLocationButton({
+  lead,
+  onResolved,
+}: {
+  lead: Lead;
+  onResolved: () => void;
+}) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{
+    ok: boolean;
+    message: string;
+    latitude?: number;
+    longitude?: number;
+    source?: string;
+  } | null>(null);
+
+  async function run() {
+    setBusy(true);
+    setResult(null);
+    try {
+      const response = await api.post<{
+        candidate: {
+          latitude: number;
+          longitude: number;
+          source: string;
+          confidence: string;
+          displayName: string;
+        } | null;
+        saved: boolean;
+      }>('/geocode', { action: 'resolve-lead', leadId: lead.id });
+
+      if (response.candidate) {
+        setResult({
+          ok: true,
+          message: response.candidate.displayName,
+          latitude: response.candidate.latitude,
+          longitude: response.candidate.longitude,
+          source: response.candidate.source,
+        });
+        toast.success('Location resolved successfully.');
+        onResolved();
+      } else {
+        setResult({
+          ok: false,
+          message:
+            'Unable to resolve this location. Please check the Google Maps link, or enter the coordinates by hand.',
+        });
+      }
+    } catch (cause) {
+      setResult({ ok: false, message: friendlyError(cause, 'Unable to resolve this location.') });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const SOURCE_LABEL: Record<string, string> = {
+    google_maps_url: 'Google Maps link',
+    google_maps_redirect: 'Google Maps link (followed)',
+    geocoded: 'Name and address lookup',
+  };
+
+  return (
+    <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm text-slate-600">
+          {lead.google_maps_url
+            ? 'This society has a Google Maps link but no coordinates yet.'
+            : 'This society has no coordinates yet.'}
+        </p>
+        <Button size="sm" onClick={run} loading={busy} icon={<Crosshair className="size-4" />}>
+          {busy ? 'Resolving…' : 'Resolve location'}
+        </Button>
+      </div>
+
+      {result && (
+        <Alert tone={result.ok ? 'success' : 'warning'} className="mt-3">
+          {result.ok ? (
+            <>
+              <p className="font-medium">Location resolved.</p>
+              <p className="mt-0.5">{result.message}</p>
+              <p className="mt-1 font-mono text-xs">
+                {result.latitude?.toFixed(6)}, {result.longitude?.toFixed(6)}
+              </p>
+              <p className="mt-0.5 text-xs">
+                Source: {SOURCE_LABEL[result.source ?? ''] ?? result.source}
+              </p>
+            </>
+          ) : (
+            result.message
+          )}
+        </Alert>
+      )}
     </div>
   );
 }

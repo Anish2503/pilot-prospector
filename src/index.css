@@ -1,0 +1,140 @@
+@import 'tailwindcss';
+@import 'leaflet/dist/leaflet.css';
+@import 'leaflet.markercluster/dist/MarkerCluster.css';
+@import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
+
+/* =============================================================================
+   DESIGN TOKENS
+   Change the brand colours here and the whole app follows. These are generic
+   professional blues - swap them for MyGate's official palette whenever you
+   have the exact hex codes.
+   ========================================================================== */
+@theme {
+  --color-brand-50:  oklch(0.971 0.014 254);
+  --color-brand-100: oklch(0.936 0.032 255);
+  --color-brand-200: oklch(0.885 0.062 254);
+  --color-brand-300: oklch(0.809 0.105 252);
+  --color-brand-400: oklch(0.707 0.165 254);
+  --color-brand-500: oklch(0.623 0.214 259);
+  --color-brand-600: oklch(0.546 0.245 262);
+  --color-brand-700: oklch(0.488 0.243 264);
+  --color-brand-800: oklch(0.424 0.199 265);
+  --color-brand-900: oklch(0.379 0.146 265);
+  --color-brand-950: oklch(0.282 0.091 267);
+
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+    Roboto, 'Helvetica Neue', Arial, sans-serif;
+
+  --radius-card: 0.875rem;
+}
+
+/* =============================================================================
+   BASE
+   ========================================================================== */
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    @apply bg-slate-50 text-slate-900 antialiased;
+    font-family: var(--font-sans);
+    /* Respects the notch / home indicator on phones. */
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  /* Stops iOS Safari zooming in when a BDM taps a form field. */
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  /* A clear, consistent focus ring for keyboard users. */
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-brand-600;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-slate-300;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-slate-400;
+  }
+}
+
+/* =============================================================================
+   COMPONENT SHORTCUTS
+   ========================================================================== */
+@layer components {
+  .card {
+    @apply rounded-[var(--radius-card)] border border-slate-200 bg-white shadow-sm;
+  }
+
+  .input-base {
+    @apply w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-slate-900
+           placeholder:text-slate-400 transition
+           focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none
+           disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500;
+  }
+
+  .label-base {
+    @apply mb-1.5 block text-sm font-medium text-slate-700;
+  }
+
+  /* Keeps wide tables usable on a phone without breaking the page layout. */
+  .scroll-x {
+    @apply overflow-x-auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* =============================================================================
+   MAP
+   Leaflet injects its own DOM, so a few overrides live outside Tailwind.
+   ========================================================================== */
+.leaflet-container {
+  @apply font-sans;
+  z-index: 0;
+}
+
+.leaflet-popup-content-wrapper {
+  @apply rounded-xl shadow-lg;
+}
+
+.leaflet-popup-content {
+  margin: 0.875rem 1rem;
+  min-width: 200px;
+}
+
+/* =============================================================================
+   ANIMATION
+   ========================================================================== */
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.25s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

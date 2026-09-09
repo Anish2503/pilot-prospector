@@ -8,11 +8,13 @@ import {
   Phone,
   Save,
   Swords,
+  Trash2,
   UserMinus,
   UserPlus,
   X,
 } from 'lucide-react';
-import { Dialog, ConfirmDialog } from '@/components/ui/Dialog';
+import { Dialog } from '@/components/ui/Dialog';
+import { DeleteLeadDialog, PullLeadDialog } from '@/components/LeadActions';
 import { Button } from '@/components/ui/Button';
 import { Input, Select } from '@/components/ui/Field';
 import { Alert, Badge, ConfidenceTag, LoadingBlock, StatusBadge } from '@/components/ui/Feedback';
@@ -40,14 +42,12 @@ export function LeadDetailDialog({
   onClose: () => void;
   onChanged: () => void;
 }) {
-  const toast = useToast();
-
   const [visits, setVisits] = useState<VisitRow[] | null>(null);
   const [assignments, setAssignments] = useState<AssignmentRow[] | null>(null);
   const [editing, setEditing] = useState(false);
   const [assigning, setAssigning] = useState(false);
-  const [confirmUnassign, setConfirmUnassign] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [confirmPull, setConfirmPull] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const leadId = lead?.id;
 
@@ -84,20 +84,6 @@ export function LeadDetailDialog({
 
   const currentBdmName =
     'current_bdm' in lead && lead.current_bdm ? lead.current_bdm.name : null;
-
-  async function unassign() {
-    setBusy(true);
-    const { error } = await supabase.rpc('unassign_lead', { p_lead_id: lead!.id });
-    setBusy(false);
-    setConfirmUnassign(false);
-
-    if (error) toast.error(friendlyError(error));
-    else {
-      toast.success('Assignment removed.');
-      onChanged();
-      onClose();
-    }
-  }
 
   return (
     <>
@@ -151,9 +137,9 @@ export function LeadDetailDialog({
                     size="sm"
                     variant="secondary"
                     icon={<UserMinus className="size-4" />}
-                    onClick={() => setConfirmUnassign(true)}
+                    onClick={() => setConfirmPull(true)}
                   >
-                    Remove assignment
+                    Pull from BDM
                   </Button>
                 )}
               </div>
@@ -335,6 +321,24 @@ export function LeadDetailDialog({
             </section>
           )}
 
+          {/* -------------------------------------------------- Danger zone */}
+          <section className="rounded-lg border border-red-200 bg-red-50/50 p-3">
+            <h3 className="text-sm font-semibold text-red-900">Delete this lead</h3>
+            <p className="mt-0.5 mb-3 text-sm leading-relaxed text-red-800/80">
+              Removes {lead.society_name} from the app permanently — the leads list, the map,
+              search, every BDM's sheet and all reports. A full copy is kept in the deletion
+              archive for auditing, but it cannot be restored from the app.
+            </p>
+            <Button
+              size="sm"
+              variant="danger"
+              icon={<Trash2 className="size-4" />}
+              onClick={() => setConfirmDelete(true)}
+            >
+              Delete lead
+            </Button>
+          </section>
+
           {/* ---------------------------------------------------- Provenance */}
           <section className="border-t border-slate-200 pt-4 text-xs text-slate-400">
             {lead.source_file && (
@@ -348,22 +352,43 @@ export function LeadDetailDialog({
         </div>
       </Dialog>
 
-      <ConfirmDialog
-        open={confirmUnassign}
-        onCancel={() => setConfirmUnassign(false)}
-        onConfirm={unassign}
-        title="Remove this assignment?"
-        message={
-          <>
-            {currentBdmName} will no longer see this society in their list.
-            <br />
-            <br />
-            Their past visits and notes are <strong>kept</strong>, and the change is recorded in
-            the lead's history.
-          </>
+      <PullLeadDialog
+        lead={
+          confirmPull
+            ? {
+                id: lead.id,
+                society_name: lead.society_name,
+                visit_count: lead.visit_count,
+                bdmName: currentBdmName,
+              }
+            : null
         }
-        confirmLabel="Remove assignment"
-        loading={busy}
+        onClose={() => setConfirmPull(false)}
+        onDone={() => {
+          setConfirmPull(false);
+          onChanged();
+          void loadHistory();
+        }}
+      />
+
+      <DeleteLeadDialog
+        lead={
+          confirmDelete
+            ? {
+                id: lead.id,
+                society_name: lead.society_name,
+                visit_count: lead.visit_count,
+                bdmName: currentBdmName,
+              }
+            : null
+        }
+        onClose={() => setConfirmDelete(false)}
+        onDone={() => {
+          setConfirmDelete(false);
+          onChanged();
+          // The lead no longer exists, so this panel must not stay open on it.
+          onClose();
+        }}
       />
     </>
   );

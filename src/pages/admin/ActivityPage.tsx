@@ -8,6 +8,7 @@ import {
   MapPin,
   Pencil,
   ShieldCheck,
+  Trash2,
   Upload,
   UserPlus,
   Users,
@@ -45,7 +46,8 @@ const ACTION_META: Record<
   'leads.imported': { label: 'Leads imported', icon: Upload, tone: 'brand' },
   'lead.assigned': { label: 'Lead assigned', icon: UserPlus, tone: 'emerald' },
   'lead.reassigned': { label: 'Lead reassigned', icon: UserPlus, tone: 'amber' },
-  'lead.unassigned': { label: 'Assignment removed', icon: UserPlus, tone: 'amber' },
+  'lead.unassigned': { label: 'Lead pulled from BDM', icon: UserPlus, tone: 'amber' },
+  'lead.deleted': { label: 'Lead deleted', icon: Trash2, tone: 'amber' },
   'lead.edited': { label: 'Lead edited', icon: Pencil, tone: 'slate' },
   'lead.location_confirmed': { label: 'Location confirmed', icon: MapPin, tone: 'emerald' },
   'lead.location_rejected': { label: 'Location rejected', icon: MapPin, tone: 'amber' },
@@ -259,9 +261,12 @@ export default function ActivityPage() {
                         </span>
                       </p>
 
-                      {log.leads?.society_name && (
+                      {(log.leads?.society_name ??
+                        (typeof log.metadata?.society_name === 'string'
+                          ? log.metadata.society_name
+                          : null)) && (
                         <p className="mt-0.5 truncate text-sm text-slate-600">
-                          {log.leads.society_name}
+                          {log.leads?.society_name ?? String(log.metadata?.society_name)}
                         </p>
                       )}
 
@@ -342,7 +347,14 @@ function Details({
   } else if (action === 'lead.assigned') {
     summary = `Given to ${text('new_bdm_name') ?? 'a BDM'}`;
   } else if (action === 'lead.unassigned') {
-    summary = `Taken from ${text('previous_bdm_name') ?? 'a BDM'}`;
+    summary = `Pulled back from ${text('previous_bdm_name') ?? 'a BDM'}`;
+  } else if (action === 'lead.deleted') {
+    const parts = [
+      text('previous_bdm_name') ? `was with ${text('previous_bdm_name')}` : null,
+      num('visits_archived') ? `${formatNumber(num('visits_archived')!)} visits archived` : null,
+      text('reason'),
+    ].filter(Boolean);
+    summary = parts.length ? parts.join(' · ') : 'Archived before deletion';
   } else if (action.startsWith('bdm.') || action.startsWith('admin.')) {
     summary = text('name') ?? text('username');
   }

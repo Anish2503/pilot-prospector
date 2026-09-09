@@ -7,6 +7,9 @@ import {
   ChevronRight,
   Download,
   Filter,
+  MoreVertical,
+  Trash2,
+  UserMinus,
   Search,
   UserPlus,
   X,
@@ -17,6 +20,11 @@ import { Alert, Badge, EmptyState, Skeleton, StatusBadge } from '@/components/ui
 import { Dialog } from '@/components/ui/Dialog';
 import { useToast } from '@/components/ui/Toast';
 import { LeadDetailDialog } from '@/components/LeadDetailDialog';
+import {
+  DeleteLeadDialog,
+  PullLeadDialog,
+  type ActionableLead,
+} from '@/components/LeadActions';
 import { supabase } from '@/lib/supabase';
 import { friendlyError } from '@/lib/errors';
 import { ALL_STATUSES, cn, debounce, formatNumber, formatRelative, STATUS_LABELS } from '@/lib/utils';
@@ -47,6 +55,8 @@ export default function LeadsPage() {
   const [showFilters, setShowFilters] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const [pullTarget, setPullTarget] = useState<ActionableLead | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ActionableLead | null>(null);
   const [detailLead, setDetailLead] = useState<LeadWithBdm | null>(null);
 
   const [bdms, setBdms] = useState<Bdm[]>([]);
@@ -350,6 +360,9 @@ export default function LeadsPage() {
                     <SortableHeader field="last_visit_at" {...{ sortBy, ascending, toggleSort }}>
                       Last update
                     </SortableHeader>
+                    <th className="w-12 px-3 py-3">
+                      <span className="sr-only">Actions</span>
+                    </th>
                   </tr>
                 </thead>
 
@@ -423,6 +436,29 @@ export default function LeadsPage() {
 
                       <td className="px-3 py-3 whitespace-nowrap text-slate-500">
                         {lead.last_visit_at ? formatRelative(lead.last_visit_at) : 'Never'}
+                      </td>
+
+                      <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+                        <RowActions
+                          lead={lead}
+                          onView={() => setDetailLead(lead)}
+                          onPull={() =>
+                            setPullTarget({
+                              id: lead.id,
+                              society_name: lead.society_name,
+                              visit_count: lead.visit_count,
+                              bdmName: lead.current_bdm?.name ?? null,
+                            })
+                          }
+                          onDelete={() =>
+                            setDeleteTarget({
+                              id: lead.id,
+                              society_name: lead.society_name,
+                              visit_count: lead.visit_count,
+                              bdmName: lead.current_bdm?.name ?? null,
+                            })
+                          }
+                        />
                       </td>
                     </tr>
                   ))}
@@ -502,6 +538,32 @@ export default function LeadsPage() {
         filters={filters}
         total={total}
         onClose={() => setExportOpen(false)}
+      />
+
+      <PullLeadDialog
+        lead={pullTarget}
+        onClose={() => setPullTarget(null)}
+        onDone={() => {
+          setPullTarget(null);
+          setSelected(new Set());
+          void reload();
+        }}
+      />
+
+      <DeleteLeadDialog
+        lead={deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onDone={() => {
+          setDeleteTarget(null);
+          // Drop it from the selection too, so a follow-up bulk assign cannot
+          // reference a lead that no longer exists.
+          setSelected((current) => {
+            const next = new Set(current);
+            next.delete(deleteTarget!.id);
+            return next;
+          });
+          void reload();
+        }}
       />
 
       <LeadDetailDialog
@@ -788,5 +850,108 @@ function ExportDialog({
         </label>
       </div>
     </Dialog>
+  );
+}
+
+// -----------------------------------------------------------------------------
+
+/**
+ * The per-row action menu.
+ *
+ * Which actions appear depends on whether the lead currently has an owner:
+ *
+ *   assigned    ->  View · Reassign · Pull from BDM · Delete
+ *   unassigned  ->  View · Assign            · Delete
+ *
+ * Reassign and Assign both open the detail panel, where the BDM is chosen.
+ */
+function RowActions({
+  lead,
+  onView,
+  onPull,
+  onDelete,
+}: {
+  lead: LeadWithBdm;
+  onView: () => void;
+  onPull: () => void;
+  onDelete: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const assigned = Boolean(lead.current_bdm);
+
+  const close = (then: () => void) => () => {
+    setOpen(false);
+    then();
+  };
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="-mr-1 rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+        aria-label={`Actions for ${lead.society_name}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        <MoreVertical className="size-5" />
+      </button>
+
+      {open && (
+        <>
+          {/* Catches the next click anywhere, so the menu closes. */}
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} aria-hidden />
+          <div
+            role="menu"
+            className="absolute right-0 z-20 mt-1 w-52 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg"
+          >
+            <RowMenuItem icon={<Building2 className="size-4" />} onClick={close(onView)}>
+              View details
+            </RowMenuItem>
+
+            <RowMenuItem icon={<UserPlus className="size-4" />} onClick={close(onView)}>
+              {assigned ? 'Reassign' : 'Assign to BDM'}
+            </RowMenuItem>
+
+            {assigned && (
+              <RowMenuItem icon={<UserMinus className="size-4" />} onClick={close(onPull)}>
+                Pull from BDM
+              </RowMenuItem>
+            )}
+
+            <div className="my-1 border-t border-slate-100" />
+
+            <RowMenuItem icon={<Trash2 className="size-4" />} danger onClick={close(onDelete)}>
+              Delete lead
+            </RowMenuItem>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function RowMenuItem({
+  icon,
+  children,
+  onClick,
+  danger,
+}: {
+  icon: React.ReactNode;
+  children: React.ReactNode;
+  onClick: () => void;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      role="menuitem"
+      onClick={onClick}
+      className={cn(
+        'flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm transition',
+        danger ? 'text-red-600 hover:bg-red-50' : 'text-slate-700 hover:bg-slate-50',
+      )}
+    >
+      {icon}
+      {children}
+    </button>
   );
 }

@@ -11,6 +11,8 @@ import AdminLoginPage from '@/pages/AdminLoginPage';
 import BdmLoginPage from '@/pages/BdmLoginPage';
 import SetupPage from '@/pages/SetupPage';
 import NotFoundPage from '@/pages/NotFoundPage';
+import ConfigErrorPage from '@/pages/ConfigErrorPage';
+import { configError } from '@/lib/env';
 
 // The admin section is large and only admins ever open it, so it downloads
 // separately. A BDM on a phone never pays for code they will not use.
@@ -39,6 +41,11 @@ function SuspenseFallback() {
 }
 
 export default function App() {
+  // Checked before anything else renders. Without these settings the app cannot
+  // reach the database at all, so showing the real reason beats showing a login
+  // screen that could never work - and beats a blank page.
+  if (configError) return <ConfigErrorPage />;
+
   return (
     <ErrorBoundary>
       <BrowserRouter>

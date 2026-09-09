@@ -28,10 +28,6 @@ export class ErrorBoundary extends Component<Props, State> {
     const { error } = this.state;
     if (!error) return this.props.children;
 
-    // A missing environment variable is by far the most likely cause on a fresh
-    // deployment, so it gets its own explanation.
-    const isConfigProblem = error.message.startsWith('Missing configuration');
-
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50 p-6">
         <div className="card w-full max-w-lg p-8 text-center">
@@ -40,20 +36,16 @@ export class ErrorBoundary extends Component<Props, State> {
           </div>
 
           <h1 className="text-lg font-semibold text-slate-900">
-            {isConfigProblem ? 'The app is not configured yet' : 'Something went wrong'}
+            Something went wrong
           </h1>
 
           <p className="mt-2 text-sm leading-relaxed text-slate-600">
-            {isConfigProblem
-              ? error.message
-              : 'The page ran into an unexpected problem. Reloading usually fixes it.'}
+            The page ran into an unexpected problem. Reloading usually fixes it.
           </p>
 
-          {!isConfigProblem && (
-            <pre className="mt-4 max-h-32 overflow-auto rounded-lg bg-slate-100 p-3 text-left text-xs text-slate-500">
-              {error.message}
-            </pre>
-          )}
+          <pre className="mt-4 max-h-32 overflow-auto rounded-lg bg-slate-100 p-3 text-left text-xs text-slate-500">
+            {error.message}
+          </pre>
 
           <button
             onClick={() => window.location.reload()}

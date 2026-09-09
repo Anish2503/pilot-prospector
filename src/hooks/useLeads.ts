@@ -294,3 +294,26 @@ export function fetchLeadsForMap(maxLeads = 10_000): Promise<MapLeadRow[]> {
     maxLeads,
   );
 }
+
+/**
+ * Every lead id matching the current filters - nothing else.
+ *
+ * This is what "Select all N matching" uses. Only the id column is requested,
+ * so 10,000 leads cost about 360KB rather than the many megabytes the full rows
+ * would take. The filters are the same ones the table is showing, so the
+ * selection can never include something the admin cannot see.
+ */
+export const SELECT_ALL_LIMIT = 10_000;
+
+export async function fetchLeadIdsForSelection(filters: LeadFilters): Promise<string[]> {
+  const rows = await fetchAllPages<{ id: string }>(
+    (from, to) =>
+      applyFilters(supabase.from('leads').select('id'), filters)
+        .order('society_name', { ascending: true })
+        .order('id', { ascending: true })
+        .range(from, to) as never,
+    SELECT_ALL_LIMIT,
+  );
+
+  return rows.map((row) => row.id);
+}

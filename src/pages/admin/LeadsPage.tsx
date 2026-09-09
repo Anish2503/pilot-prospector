@@ -25,13 +25,16 @@ import {
   PullLeadDialog,
   type ActionableLead,
 } from '@/components/LeadActions';
+import { BulkDeleteDialog, BulkPullDialog } from '@/components/BulkLeadActions';
 import { supabase } from '@/lib/supabase';
 import { friendlyError } from '@/lib/errors';
 import { ALL_STATUSES, cn, debounce, formatNumber, formatRelative, STATUS_LABELS } from '@/lib/utils';
 import {
   EMPTY_FILTERS,
   EXPORT_LIMIT,
+  fetchLeadIdsForSelection,
   fetchLeadsForExport,
+  SELECT_ALL_LIMIT,
   useLeads,
   type LeadFilters,
   type SortField,
@@ -56,6 +59,9 @@ export default function LeadsPage() {
   const [assignOpen, setAssignOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [pullTarget, setPullTarget] = useState<ActionableLead | null>(null);
+  const [bulkPullIds, setBulkPullIds] = useState<string[] | null>(null);
+  const [bulkDeleteIds, setBulkDeleteIds] = useState<string[] | null>(null);
+  const [selectingAll, setSelectingAll] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ActionableLead | null>(null);
   const [detailLead, setDetailLead] = useState<LeadWithBdm | null>(null);
 
@@ -127,6 +133,24 @@ export default function LeadsPage() {
   useEffect(() => {
     if (!loading && leads.length === 0 && page > 0) setPage(0);
   }, [loading, leads.length, page]);
+
+  /**
+   * Selects every lead the current filters match, not just the visible page.
+   * Only the id column is fetched, so this stays small even at ten thousand
+   * leads - see fetchLeadIdsForSelection.
+   */
+  async function selectAllMatching() {
+    setSelectingAll(true);
+    try {
+      const ids = await fetchLeadIdsForSelection(filters);
+      setSelected(new Set(ids));
+      toast.info(`${formatNumber(ids.length)} leads selected.`);
+    } catch (cause) {
+      toast.error(friendlyError(cause, 'Could not select them all. Please try again.'));
+    } finally {
+      setSelectingAll(false);
+    }
+  }
 
   function toggleAll() {
     setSelected((current) => {
@@ -285,23 +309,68 @@ export default function LeadsPage() {
 
       {/* --------------------------------------------------- Bulk action bar */}
       {selected.size > 0 && (
-        <div className="animate-fade-in-up sticky top-16 z-20 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-slate-900 px-4 py-3 text-white shadow-lg lg:top-4">
-          <p className="text-sm font-medium">
-            {formatNumber(selected.size)} selected
-          </p>
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant="ghost"
-              className="text-slate-300 hover:bg-white/10 hover:text-white"
-              onClick={() => setSelected(new Set())}
-            >
-              Clear
-            </Button>
-            <Button size="sm" icon={<UserPlus className="size-4" />} onClick={() => setAssignOpen(true)}>
-              Assign to BDM
-            </Button>
+        <div className="animate-fade-in-up sticky top-16 z-20 rounded-xl bg-slate-900 px-4 py-3 text-white shadow-lg lg:top-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm font-medium">
+              {formatNumber(selected.size)} {selected.size === 1 ? 'lead' : 'leads'} selected
+            </p>
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-slate-300 hover:bg-white/10 hover:text-white"
+                onClick={() => setSelected(new Set())}
+              >
+                Clear
+              </Button>
+              <Button
+                size="sm"
+                icon={<UserPlus className="size-4" />}
+                onClick={() => setAssignOpen(true)}
+              >
+                Assign to BDM
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                icon={<UserMinus className="size-4" />}
+                onClick={() => setBulkPullIds([...selected])}
+              >
+                Pull Selected
+              </Button>
+              <Button
+                size="sm"
+                variant="danger"
+                icon={<Trash2 className="size-4" />}
+                onClick={() => setBulkDeleteIds([...selected])}
+              >
+                Delete Selected
+              </Button>
+            </div>
           </div>
+
+          {/*
+            Only offered once the whole visible page is ticked, and only when
+            there is more beyond it. Selecting everything fetches ids alone -
+            never the full rows - so it stays cheap at ten thousand leads.
+          */}
+          {allOnPageSelected && selected.size < total && (
+            <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-white/10 pt-2 text-sm text-slate-300">
+              <span>
+                All {formatNumber(leads.length)} on this page are selected.
+              </span>
+              <button
+                onClick={selectAllMatching}
+                disabled={selectingAll}
+                className="font-medium text-white underline underline-offset-2 disabled:opacity-60"
+              >
+                {selectingAll
+                  ? 'Selecting…'
+                  : `Select all ${formatNumber(Math.min(total, SELECT_ALL_LIMIT))} matching your filters`}
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -538,6 +607,26 @@ export default function LeadsPage() {
         filters={filters}
         total={total}
         onClose={() => setExportOpen(false)}
+      />
+
+      <BulkPullDialog
+        leadIds={bulkPullIds}
+        onClose={() => setBulkPullIds(null)}
+        onDone={() => {
+          setBulkPullIds(null);
+          setSelected(new Set());
+          void reload();
+        }}
+      />
+
+      <BulkDeleteDialog
+        leadIds={bulkDeleteIds}
+        onClose={() => setBulkDeleteIds(null)}
+        onDone={() => {
+          setBulkDeleteIds(null);
+          setSelected(new Set());
+          void reload();
+        }}
       />
 
       <PullLeadDialog

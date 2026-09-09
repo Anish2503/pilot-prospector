@@ -48,6 +48,8 @@ const ACTION_META: Record<
   'lead.reassigned': { label: 'Lead reassigned', icon: UserPlus, tone: 'amber' },
   'lead.unassigned': { label: 'Lead pulled from BDM', icon: UserPlus, tone: 'amber' },
   'lead.deleted': { label: 'Lead deleted', icon: Trash2, tone: 'amber' },
+  'leads.bulk_pulled': { label: 'Bulk pull from BDMs', icon: UserPlus, tone: 'amber' },
+  'leads.bulk_deleted': { label: 'Bulk delete', icon: Trash2, tone: 'amber' },
   'lead.edited': { label: 'Lead edited', icon: Pencil, tone: 'slate' },
   'lead.location_confirmed': { label: 'Location confirmed', icon: MapPin, tone: 'emerald' },
   'lead.location_rejected': { label: 'Location rejected', icon: MapPin, tone: 'amber' },
@@ -348,6 +350,25 @@ function Details({
     summary = `Given to ${text('new_bdm_name') ?? 'a BDM'}`;
   } else if (action === 'lead.unassigned') {
     summary = `Pulled back from ${text('previous_bdm_name') ?? 'a BDM'}`;
+  } else if (action === 'leads.bulk_pulled') {
+    const bdms = Array.isArray(metadata.bdms_affected) ? metadata.bdms_affected : [];
+    const parts = [
+      num('pulled') !== null ? `${formatNumber(num('pulled')!)} pulled` : null,
+      num('already_unassigned') ? `${formatNumber(num('already_unassigned')!)} already unassigned` : null,
+      num('failed') ? `${formatNumber(num('failed')!)} failed` : null,
+      bdms.length ? `from ${bdms.join(', ')}` : null,
+    ].filter(Boolean);
+    summary = parts.join(' · ');
+  } else if (action === 'leads.bulk_deleted') {
+    const names = Array.isArray(metadata.sample_names) ? metadata.sample_names : [];
+    const parts = [
+      num('deleted') !== null ? `${formatNumber(num('deleted')!)} deleted` : null,
+      num('failed') ? `${formatNumber(num('failed')!)} failed` : null,
+      num('visits_archived') ? `${formatNumber(num('visits_archived')!)} visits archived` : null,
+      names.length ? `incl. ${names.slice(0, 3).join(', ')}` : null,
+      text('reason'),
+    ].filter(Boolean);
+    summary = parts.join(' · ');
   } else if (action === 'lead.deleted') {
     const parts = [
       text('previous_bdm_name') ? `was with ${text('previous_bdm_name')}` : null,
